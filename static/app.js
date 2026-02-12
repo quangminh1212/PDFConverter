@@ -148,8 +148,8 @@ async function handleFileSelect(file) {
         return;
     }
 
-    if (file.size > 100 * 1024 * 1024) {
-        showToast("File size exceeds 100 MB limit", "error");
+    if (file.size > 500 * 1024 * 1024) {
+        showToast("File size exceeds 500 MB limit", "error");
         return;
     }
 
