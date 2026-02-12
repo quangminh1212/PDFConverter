@@ -1,0 +1,239 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PDFConverter - Professional PDF Conversion Tool</title>
+    <meta name="description" content="Convert PDF files to Word, Excel, Images, Text, HTML, Markdown, and CSV with OCR support for accurate text extraction.">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/icon?family=Material+Icons+Round" rel="stylesheet">
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+    <!-- Background decorations -->
+    <div class="bg-decoration">
+        <div class="bg-orb bg-orb-1"></div>
+        <div class="bg-orb bg-orb-2"></div>
+        <div class="bg-orb bg-orb-3"></div>
+    </div>
+
+    <div class="app-container">
+        <!-- Header -->
+        <header class="app-header">
+            <div class="logo">
+                <span class="material-icons-round logo-icon">picture_as_pdf</span>
+                <h1>PDF<span class="accent">Converter</span></h1>
+            </div>
+            <p class="subtitle">Professional PDF Conversion with OCR Technology</p>
+        </header>
+
+        <!-- Main Content -->
+        <main class="main-content">
+            <!-- Step 1: Upload -->
+            <section id="upload-section" class="section glass-card active">
+                <div class="section-header">
+                    <span class="step-badge">1</span>
+                    <h2>Upload PDF File</h2>
+                </div>
+
+                <div id="drop-zone" class="drop-zone">
+                    <div class="drop-zone-content">
+                        <span class="material-icons-round drop-icon">cloud_upload</span>
+                        <h3>Drag & Drop your PDF here</h3>
+                        <p>or click to browse files</p>
+                        <span class="file-limit">Maximum file size: 100 MB</span>
+                    </div>
+                    <input type="file" id="file-input" accept=".pdf" hidden>
+                </div>
+
+                <!-- File Info Card (shown after upload) -->
+                <div id="file-info" class="file-info hidden">
+                    <div class="file-info-header">
+                        <span class="material-icons-round file-icon">description</span>
+                        <div class="file-details">
+                            <h4 id="file-name">document.pdf</h4>
+                            <span id="file-meta" class="file-meta">0 pages • 0 KB</span>
+                        </div>
+                        <button id="remove-file" class="btn-icon" title="Remove file">
+                            <span class="material-icons-round">close</span>
+                        </button>
+                    </div>
+
+                    <!-- PDF Preview -->
+                    <div id="preview-container" class="preview-container">
+                        <img id="preview-image" class="preview-image" alt="PDF Preview">
+                        <div class="preview-nav">
+                            <button id="prev-page" class="btn-icon-sm"><span class="material-icons-round">chevron_left</span></button>
+                            <span id="page-indicator">Page 1 / 1</span>
+                            <button id="next-page" class="btn-icon-sm"><span class="material-icons-round">chevron_right</span></button>
+                        </div>
+                    </div>
+
+                    <!-- Page Info Grid -->
+                    <div id="page-info-grid" class="page-info-grid"></div>
+                </div>
+            </section>
+
+            <!-- Step 2: Configure -->
+            <section id="config-section" class="section glass-card hidden">
+                <div class="section-header">
+                    <span class="step-badge">2</span>
+                    <h2>Choose Format & Settings</h2>
+                </div>
+
+                <!-- Format Selection -->
+                <div class="format-grid" id="format-grid">
+                    <button class="format-card" data-format="word">
+                        <span class="material-icons-round format-icon">article</span>
+                        <span class="format-name">Word</span>
+                        <span class="format-ext">.docx</span>
+                    </button>
+                    <button class="format-card" data-format="excel">
+                        <span class="material-icons-round format-icon">table_chart</span>
+                        <span class="format-name">Excel</span>
+                        <span class="format-ext">.xlsx</span>
+                    </button>
+                    <button class="format-card" data-format="image">
+                        <span class="material-icons-round format-icon">image</span>
+                        <span class="format-name">Image</span>
+                        <span class="format-ext">.png</span>
+                    </button>
+                    <button class="format-card" data-format="text">
+                        <span class="material-icons-round format-icon">text_snippet</span>
+                        <span class="format-name">Text</span>
+                        <span class="format-ext">.txt</span>
+                    </button>
+                    <button class="format-card" data-format="html">
+                        <span class="material-icons-round format-icon">code</span>
+                        <span class="format-name">HTML</span>
+                        <span class="format-ext">.html</span>
+                    </button>
+                    <button class="format-card" data-format="markdown">
+                        <span class="material-icons-round format-icon">edit_note</span>
+                        <span class="format-name">Markdown</span>
+                        <span class="format-ext">.md</span>
+                    </button>
+                    <button class="format-card" data-format="csv">
+                        <span class="material-icons-round format-icon">grid_on</span>
+                        <span class="format-name">CSV</span>
+                        <span class="format-ext">.csv</span>
+                    </button>
+                </div>
+
+                <!-- OCR Settings -->
+                <div class="settings-panel">
+                    <div class="setting-row">
+                        <div class="setting-info">
+                            <span class="material-icons-round setting-icon">document_scanner</span>
+                            <div>
+                                <h4>OCR Processing</h4>
+                                <p>Enable for scanned PDFs to extract text accurately</p>
+                            </div>
+                        </div>
+                        <label class="toggle-switch">
+                            <input type="checkbox" id="ocr-toggle" checked>
+                            <span class="toggle-slider"></span>
+                        </label>
+                    </div>
+
+                    <div id="ocr-options" class="ocr-options">
+                        <div class="setting-row">
+                            <div class="setting-info">
+                                <span class="material-icons-round setting-icon">translate</span>
+                                <div>
+                                    <h4>OCR Language</h4>
+                                    <p>Select languages for text recognition</p>
+                                </div>
+                            </div>
+                            <select id="ocr-lang" class="select-input">
+                                <option value="eng+vie">English + Vietnamese</option>
+                                <option value="eng">English</option>
+                                <option value="vie">Vietnamese</option>
+                                <option value="jpn">Japanese</option>
+                                <option value="kor">Korean</option>
+                                <option value="chi_sim">Chinese (Simplified)</option>
+                                <option value="fra">French</option>
+                                <option value="deu">German</option>
+                            </select>
+                        </div>
+                    </div>
+
+                    <!-- Image DPI (shown for image format) -->
+                    <div id="image-options" class="hidden">
+                        <div class="setting-row">
+                            <div class="setting-info">
+                                <span class="material-icons-round setting-icon">high_quality</span>
+                                <div>
+                                    <h4>Image Quality (DPI)</h4>
+                                    <p>Higher DPI = better quality, larger file</p>
+                                </div>
+                            </div>
+                            <select id="image-dpi" class="select-input">
+                                <option value="72">72 DPI (Web)</option>
+                                <option value="150">150 DPI (Standard)</option>
+                                <option value="200" selected>200 DPI (Good)</option>
+                                <option value="300">300 DPI (Print)</option>
+                                <option value="600">600 DPI (High Quality)</option>
+                            </select>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Convert Button -->
+                <button id="convert-btn" class="btn-primary" disabled>
+                    <span class="material-icons-round">transform</span>
+                    <span>Convert Now</span>
+                </button>
+            </section>
+
+            <!-- Step 3: Result -->
+            <section id="result-section" class="section glass-card hidden">
+                <div class="section-header">
+                    <span class="step-badge">3</span>
+                    <h2>Conversion Result</h2>
+                </div>
+
+                <!-- Progress -->
+                <div id="progress-container" class="progress-container">
+                    <div class="progress-bar">
+                        <div id="progress-fill" class="progress-fill"></div>
+                    </div>
+                    <p id="progress-text" class="progress-text">Converting...</p>
+                </div>
+
+                <!-- Result Card -->
+                <div id="result-card" class="result-card hidden">
+                    <div class="result-icon-wrapper">
+                        <span id="result-icon" class="material-icons-round result-icon success">check_circle</span>
+                    </div>
+                    <h3 id="result-title">Conversion Complete!</h3>
+                    <p id="result-details" class="result-details"></p>
+
+                    <div class="result-actions">
+                        <a id="download-btn" class="btn-primary" href="#" download>
+                            <span class="material-icons-round">download</span>
+                            <span>Download File</span>
+                        </a>
+                        <button id="convert-another" class="btn-secondary">
+                            <span class="material-icons-round">refresh</span>
+                            <span>Convert Another</span>
+                        </button>
+                    </div>
+                </div>
+            </section>
+        </main>
+
+        <!-- Footer -->
+        <footer class="app-footer">
+            <p>PDFConverter &copy; 2025 — Professional PDF Conversion with OCR</p>
+        </footer>
+    </div>
+
+    <!-- Toast Notification -->
+    <div id="toast-container" class="toast-container"></div>
+
+    <script src="/static/app.js"></script>
+</body>
+</html>
