@@ -78,15 +78,15 @@ function formatFileSize(bytes) {
 function showToast(message, type = "info") {
     const toast = document.createElement("div");
     toast.className = `toast ${type}`;
-    
+
     const icon = type === "error" ? "error" : type === "success" ? "check_circle" : "info";
     toast.innerHTML = `
         <span class="material-icons-round" style="font-size:20px">${icon}</span>
         <span>${message}</span>
     `;
-    
+
     dom.toastContainer.appendChild(toast);
-    
+
     setTimeout(() => {
         toast.classList.add("removing");
         setTimeout(() => toast.remove(), 300);
@@ -425,9 +425,34 @@ function resetAll() {
 }
 
 // ============================================================
+// Theme Toggle
+// ============================================================
+function initTheme() {
+    const toggle = document.getElementById("theme-toggle");
+    const html = document.documentElement;
+    const saved = localStorage.getItem("pdf-theme");
+
+    // Apply saved theme or default to light
+    if (saved === "dark") {
+        html.setAttribute("data-theme", "dark");
+        toggle.querySelector(".material-icons-round").textContent = "light_mode";
+    }
+
+    toggle.addEventListener("click", () => {
+        const current = html.getAttribute("data-theme");
+        const next = current === "dark" ? "light" : "dark";
+        html.setAttribute("data-theme", next);
+        localStorage.setItem("pdf-theme", next);
+        toggle.querySelector(".material-icons-round").textContent =
+            next === "dark" ? "light_mode" : "dark_mode";
+    });
+}
+
+// ============================================================
 // Initialize
 // ============================================================
 document.addEventListener("DOMContentLoaded", () => {
+    initTheme();
     initDragDrop();
     initPreviewNav();
     initFormatSelection();

@@ -1,24 +1,22 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" data-theme="light">
+
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>PDFConverter - Professional PDF Conversion Tool</title>
-    <meta name="description" content="Convert PDF files to Word, Excel, Images, Text, HTML, Markdown, and CSV with OCR support for accurate text extraction.">
+    <meta name="description"
+        content="Convert PDF files to Word, Excel, Images, Text, HTML, Markdown, and CSV with OCR support for accurate text extraction.">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+    <link
+        href="https://fonts.googleapis.com/css2?family=Google+Sans:wght@400;500;600&family=Inter:wght@400;500;600&display=swap"
+        rel="stylesheet">
     <link href="https://fonts.googleapis.com/icon?family=Material+Icons+Round" rel="stylesheet">
     <link rel="stylesheet" href="/static/style.css">
 </head>
-<body>
-    <!-- Background decorations -->
-    <div class="bg-decoration">
-        <div class="bg-orb bg-orb-1"></div>
-        <div class="bg-orb bg-orb-2"></div>
-        <div class="bg-orb bg-orb-3"></div>
-    </div>
 
+<body>
     <div class="app-container">
         <!-- Header -->
         <header class="app-header">
@@ -27,6 +25,9 @@
                 <h1>PDF<span class="accent">Converter</span></h1>
             </div>
             <p class="subtitle">Professional PDF Conversion with OCR Technology</p>
+            <button id="theme-toggle" class="theme-toggle" title="Toggle theme">
+                <span class="material-icons-round">dark_mode</span>
+            </button>
         </header>
 
         <!-- Main Content -->
@@ -65,9 +66,11 @@
                     <div id="preview-container" class="preview-container">
                         <img id="preview-image" class="preview-image" alt="PDF Preview">
                         <div class="preview-nav">
-                            <button id="prev-page" class="btn-icon-sm"><span class="material-icons-round">chevron_left</span></button>
+                            <button id="prev-page" class="btn-icon-sm"><span
+                                    class="material-icons-round">chevron_left</span></button>
                             <span id="page-indicator">Page 1 / 1</span>
-                            <button id="next-page" class="btn-icon-sm"><span class="material-icons-round">chevron_right</span></button>
+                            <button id="next-page" class="btn-icon-sm"><span
+                                    class="material-icons-round">chevron_right</span></button>
                         </div>
                     </div>
 
@@ -236,4 +239,5 @@
 
     <script src="/static/app.js"></script>
 </body>
+
 </html>
