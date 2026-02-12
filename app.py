@@ -8,6 +8,8 @@ import sys
 import io
 import re
 import csv
+import gc
+import unicodedata
 import json
 import time
 import shutil
@@ -82,7 +84,8 @@ logging.basicConfig(
 logger = logging.getLogger("PDFConverter")
 
 ALLOWED_EXTENSIONS = {"pdf"}
-MAX_FILE_SIZE = 100 * 1024 * 1024  # 100 MB
+MAX_FILE_SIZE = 500 * 1024 * 1024  # 500 MB for large files
+CHUNK_SIZE = 10  # pages per chunk for memory management
 
 SUPPORTED_FORMATS = {
     "word": {"ext": ".docx", "mime": "application/vnd.openxmlformats-officedocument.wordprocessingml.document", "label": "Word Document"},
@@ -229,6 +232,170 @@ class OCREngine:
 
 
 # ============================================================
+# Multi-Layer Text Extractor (Cross-Verification)
+# ============================================================
+class TextExtractor:
+    """Multi-method text extraction with cross-verification for accuracy."""
+
+    # Common OCR ligature/character fixes
+    CHAR_FIXES = {
+        '\ufb00': 'ff', '\ufb01': 'fi', '\ufb02': 'fl',
+        '\ufb03': 'ffi', '\ufb04': 'ffl',
+        '\u2018': "'", '\u2019': "'", '\u201c': '"', '\u201d': '"',
+        '\u2013': '-', '\u2014': '--', '\u2026': '...',
+        '\u00a0': ' ',  # non-breaking space
+        '\u200b': '',   # zero-width space
+        '\u200c': '',   # zero-width non-joiner
+        '\u200d': '',   # zero-width joiner
+        '\ufeff': '',   # BOM
+    }
+
+    def __init__(self, ocr_engine: Optional[OCREngine] = None):
+        self.ocr_engine = ocr_engine
+        self.logger = logging.getLogger("PDFConverter.TextExtractor")
+
+    @staticmethod
+    def normalize_unicode(text: str) -> str:
+        """Normalize Unicode to NFC form and fix common issues."""
+        if not text:
+            return ""
+        # NFC normalization (compose characters)
+        text = unicodedata.normalize('NFC', text)
+        # Fix ligatures and special characters
+        for old, new in TextExtractor.CHAR_FIXES.items():
+            text = text.replace(old, new)
+        # Remove control characters except newlines and tabs
+        text = ''.join(
+            c if c in ('\n', '\t', '\r') or not unicodedata.category(c).startswith('C')
+            else ' ' for c in text
+        )
+        # Normalize whitespace (collapse multiple spaces, keep newlines)
+        text = re.sub(r'[^\S\n]+', ' ', text)
+        text = re.sub(r'\n{3,}', '\n\n', text)
+        return text.strip()
+
+    def extract_method_native(self, page: fitz.Page) -> str:
+        """Method A: Native PyMuPDF text extraction."""
+        try:
+            return page.get_text("text", sort=True)
+        except Exception:
+            return ""
+
+    def extract_method_blocks(self, page: fitz.Page) -> str:
+        """Method B: Structured block-based extraction (preserves reading order)."""
+        try:
+            blocks = page.get_text("dict", sort=True).get("blocks", [])
+            lines = []
+            for block in blocks:
+                if block.get("type") == 0:  # text block
+                    for line in block.get("lines", []):
+                        spans_text = ""
+                        for span in line.get("spans", []):
+                            spans_text += span.get("text", "")
+                        if spans_text.strip():
+                            lines.append(spans_text)
+            return "\n".join(lines)
+        except Exception:
+            return ""
+
+    def extract_method_ocr(self, page: fitz.Page, dpi: int = 300) -> str:
+        """Method C: OCR-based extraction."""
+        if not self.ocr_engine or not self.ocr_engine.available:
+            return ""
+        try:
+            return self.ocr_engine.ocr_page(page, dpi=dpi)
+        except Exception:
+            return ""
+
+    def _similarity_score(self, text_a: str, text_b: str) -> float:
+        """Simple character-level similarity between two texts (0.0 - 1.0)."""
+        if not text_a or not text_b:
+            return 0.0
+        a, b = text_a.strip(), text_b.strip()
+        if a == b:
+            return 1.0
+        # Use ratio of common characters
+        set_a, set_b = set(a), set(b)
+        if not set_a or not set_b:
+            return 0.0
+        common = set_a & set_b
+        return len(common) / max(len(set_a), len(set_b))
+
+    def extract_verified(
+        self, page: fitz.Page, page_num: int, use_ocr: bool = True, dpi: int = 300
+    ) -> Tuple[str, Dict[str, Any]]:
+        """Extract text with multi-layer verification.
+
+        Uses multiple methods and cross-validates results.
+        Returns (best_text, verification_report).
+        """
+        report = {"page": page_num + 1, "methods_used": [], "chosen_method": "", "confidence": 0.0}
+
+        # Method A: Native text
+        text_native = self.normalize_unicode(self.extract_method_native(page))
+        len_a = len(text_native.strip())
+        report["methods_used"].append({"name": "native", "chars": len_a})
+
+        # Method B: Block-based
+        text_blocks = self.normalize_unicode(self.extract_method_blocks(page))
+        len_b = len(text_blocks.strip())
+        report["methods_used"].append({"name": "blocks", "chars": len_b})
+
+        # Check if page needs OCR
+        needs_ocr = self.ocr_engine and self.ocr_engine.page_needs_ocr(page) if self.ocr_engine else False
+        text_ocr = ""
+
+        if use_ocr and needs_ocr:
+            text_ocr = self.normalize_unicode(self.extract_method_ocr(page, dpi))
+            len_c = len(text_ocr.strip())
+            report["methods_used"].append({"name": "ocr", "chars": len_c})
+        else:
+            len_c = 0
+
+        # Decision logic: Cross-verify and pick best
+        if len_a == 0 and len_b == 0 and len_c == 0:
+            report["chosen_method"] = "none"
+            report["confidence"] = 0.0
+            return "", report
+
+        # If native and blocks agree (high similarity), use native (fastest)
+        if len_a > 0 and len_b > 0:
+            sim_ab = self._similarity_score(text_native, text_blocks)
+            if sim_ab > 0.8:
+                # Both methods agree - high confidence
+                # Use the longer one (more complete)
+                best = text_native if len_a >= len_b else text_blocks
+                report["chosen_method"] = "native" if len_a >= len_b else "blocks"
+                report["confidence"] = min(sim_ab + 0.1, 1.0)
+                self.logger.debug(f"Page {page_num+1}: native/blocks agree (sim={sim_ab:.2f}), conf={report['confidence']:.2f}")
+                return best, report
+
+        # If OCR was used and is significantly better
+        if len_c > max(len_a, len_b) * 1.3:
+            report["chosen_method"] = "ocr"
+            report["confidence"] = 0.85
+            self.logger.info(f"Page {page_num+1}: OCR chosen (len_ocr={len_c} >> native={len_a}, blocks={len_b})")
+            return text_ocr, report
+
+        # If OCR available, verify against native
+        if text_ocr and len_a > 0:
+            sim_ac = self._similarity_score(text_native, text_ocr)
+            if sim_ac > 0.7:
+                # OCR confirms native
+                report["chosen_method"] = "native_verified_by_ocr"
+                report["confidence"] = 0.95
+                return text_native, report
+
+        # Default: pick longest result
+        candidates = [(text_native, len_a, "native"), (text_blocks, len_b, "blocks"), (text_ocr, len_c, "ocr")]
+        candidates.sort(key=lambda x: x[1], reverse=True)
+        best_text, best_len, best_name = candidates[0]
+        report["chosen_method"] = best_name
+        report["confidence"] = 0.7 if best_len > 50 else 0.5
+        return best_text, report
+
+
+# ============================================================
 # Base Converter
 # ============================================================
 class BaseConverter(ABC):
@@ -239,6 +406,7 @@ class BaseConverter(ABC):
 
     def __init__(self, ocr_engine: Optional[OCREngine] = None):
         self.ocr_engine = ocr_engine or OCREngine()
+        self.text_extractor = TextExtractor(self.ocr_engine)
         self.logger = logging.getLogger(f"PDFConverter.{self.__class__.__name__}")
 
     @abstractmethod
@@ -251,34 +419,18 @@ class BaseConverter(ABC):
         ocr_lang: str = "eng+vie",
         **kwargs,
     ) -> Dict[str, Any]:
-        """Convert PDF to target format.
-
-        Args:
-            input_path: Path to input PDF file
-            output_path: Path for output file
-            pages: List of page numbers (0-indexed), None for all pages
-            use_ocr: Whether to use OCR for scanned pages
-            ocr_lang: OCR language(s)
-            **kwargs: Format-specific options
-
-        Returns:
-            Dict with conversion result info
-        """
         pass
 
     def _extract_text_with_ocr(
         self, doc: fitz.Document, page_num: int, use_ocr: bool = True
     ) -> str:
-        """Extract text from a page, using OCR if needed."""
+        """Extract text with multi-layer verification."""
         page = doc[page_num]
-        text = page.get_text("text")
-
-        if use_ocr and self.ocr_engine.available and self.ocr_engine.page_needs_ocr(page):
-            self.logger.info(f"Page {page_num + 1}: Using OCR (scanned page detected)")
-            ocr_text = self.ocr_engine.ocr_page(page)
-            if len(ocr_text.strip()) > len(text.strip()):
-                text = ocr_text
-
+        text, report = self.text_extractor.extract_verified(page, page_num, use_ocr)
+        self.logger.debug(
+            f"Page {page_num+1}: method={report['chosen_method']}, "
+            f"confidence={report['confidence']:.0%}, chars={len(text)}"
+        )
         return text
 
     def _get_page_range(self, doc: fitz.Document, pages: Optional[List[int]] = None) -> List[int]:
@@ -286,6 +438,11 @@ class BaseConverter(ABC):
         if pages is not None:
             return [p for p in pages if 0 <= p < len(doc)]
         return list(range(len(doc)))
+
+    def _process_in_chunks(self, page_range: List[int], chunk_size: int = CHUNK_SIZE):
+        """Yield page ranges in chunks for memory-efficient processing."""
+        for i in range(0, len(page_range), chunk_size):
+            yield page_range[i:i + chunk_size]
 
 
 # ============================================================
@@ -433,7 +590,8 @@ class PDFToExcel(BaseConverter):
                             for row_data in table:
                                 for col_idx, cell_value in enumerate(row_data, 1):
                                     if cell_value is not None:
-                                        ws.cell(row=current_row, column=col_idx, value=str(cell_value).strip())
+                                        val = TextExtractor.normalize_unicode(str(cell_value).strip())
+                                        ws.cell(row=current_row, column=col_idx, value=val)
                                 current_row += 1
                             current_row += 1  # Blank row between tables
 
@@ -444,21 +602,21 @@ class PDFToExcel(BaseConverter):
                 page_range_list = self._get_page_range(doc, pages)
                 current_row = 1
 
-                for pn in page_range_list:
-                    text = self._extract_text_with_ocr(doc, pn, use_ocr)
-                    ws.cell(row=current_row, column=1, value=f"Page {pn + 1}")
-                    from openpyxl.styles import Font
-                    ws.cell(row=current_row, column=1).font = Font(bold=True)
-                    current_row += 1
+                for chunk in self._process_in_chunks(page_range_list):
+                    for pn in chunk:
+                        text = self._extract_text_with_ocr(doc, pn, use_ocr)
+                        ws.cell(row=current_row, column=1, value=f"Page {pn + 1}")
+                        from openpyxl.styles import Font
+                        ws.cell(row=current_row, column=1).font = Font(bold=True)
+                        current_row += 1
 
-                    for line in text.split("\n"):
-                        if line.strip():
-                            # Try to split by tab or multiple spaces
-                            parts = re.split(r"\t|  +", line.strip())
-                            for col_idx, part in enumerate(parts, 1):
-                                ws.cell(row=current_row, column=col_idx, value=part.strip())
-                            current_row += 1
-                    current_row += 1
+                        for line in text.split("\n"):
+                            if line.strip():
+                                parts = re.split(r"\t|  +", line.strip())
+                                for col_idx, part in enumerate(parts, 1):
+                                    ws.cell(row=current_row, column=col_idx, value=part.strip())
+                                current_row += 1
+                        current_row += 1
                 doc.close()
 
             # Auto-adjust column widths
@@ -496,22 +654,27 @@ class PDFToImage(BaseConverter):
             image_format = kwargs.get("image_format", "png")
             doc = fitz.open(input_path)
             page_range = self._get_page_range(doc, pages)
+            total_pages = len(page_range)
+            doc.close()
 
             output_dir = Path(output_path).parent
             stem = Path(output_path).stem
             image_paths = []
 
-            for pn in page_range:
-                page = doc[pn]
-                mat = fitz.Matrix(dpi / 72, dpi / 72)
-                pix = page.get_pixmap(matrix=mat, alpha=False)
+            for chunk in self._process_in_chunks(page_range):
+                doc = fitz.open(input_path)
+                for pn in chunk:
+                    page = doc[pn]
+                    mat = fitz.Matrix(dpi / 72, dpi / 72)
+                    pix = page.get_pixmap(matrix=mat, alpha=False)
 
-                img_path = str(output_dir / f"{stem}_page_{pn + 1}.{image_format}")
-                pix.save(img_path)
-                image_paths.append(img_path)
-                self.logger.info(f"Page {pn + 1} saved as image")
-
-            doc.close()
+                    img_path = str(output_dir / f"{stem}_page_{pn + 1}.{image_format}")
+                    pix.save(img_path)
+                    image_paths.append(img_path)
+                    self.logger.info(f"Image: Page {pn+1}/{total_pages} done")
+                    del pix  # Free pixmap memory
+                doc.close()
+                gc.collect()
 
             # Create ZIP archive if multiple pages
             if len(image_paths) > 1:
@@ -519,12 +682,18 @@ class PDFToImage(BaseConverter):
                 with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
                     for img_path in image_paths:
                         zf.write(img_path, Path(img_path).name)
+                # Clean up individual images after ZIP
+                for img_path in image_paths:
+                    try:
+                        os.remove(img_path)
+                    except OSError:
+                        pass
                 output_path = zip_path
             elif image_paths:
                 output_path = image_paths[0]
 
             elapsed = time.time() - start_time
-            self.logger.info(f"Image conversion completed in {elapsed:.2f}s")
+            self.logger.info(f"Image conversion completed in {elapsed:.2f}s ({total_pages} pages)")
             return {
                 "success": True,
                 "output": output_path,
@@ -550,27 +719,36 @@ class PDFToText(BaseConverter):
         start_time = time.time()
 
         try:
+            # Get page range first
             doc = fitz.open(input_path)
             page_range = self._get_page_range(doc, pages)
-            preserve_layout = kwargs.get("preserve_layout", False)
+            total_pages = len(page_range)
+            doc.close()
 
             with open(output_path, "w", encoding="utf-8") as f:
-                for i, pn in enumerate(page_range):
-                    if preserve_layout:
-                        text = doc[pn].get_text("text", sort=True)
-                    else:
+                pages_done = 0
+                for chunk in self._process_in_chunks(page_range):
+                    # Open doc per chunk for memory efficiency
+                    doc = fitz.open(input_path)
+                    for pn in chunk:
                         text = self._extract_text_with_ocr(doc, pn, use_ocr)
+                        # Ensure clean Unicode output
+                        text = TextExtractor.normalize_unicode(text)
 
-                    if i > 0:
-                        f.write("\n\n" + "=" * 60 + "\n")
-                    f.write(f"Page {pn + 1}\n")
-                    f.write("=" * 60 + "\n\n")
-                    f.write(text)
+                        if pages_done > 0:
+                            f.write("\n\n" + "=" * 60 + "\n")
+                        f.write(f"Page {pn + 1}\n")
+                        f.write("=" * 60 + "\n\n")
+                        f.write(text)
+                        f.flush()  # Stream write for large files
+                        pages_done += 1
+                        self.logger.info(f"Text: Page {pn+1}/{total_pages} done")
+                    doc.close()
+                    gc.collect()  # Free memory between chunks
 
-            doc.close()
             elapsed = time.time() - start_time
-            self.logger.info(f"Text conversion completed in {elapsed:.2f}s")
-            return {"success": True, "output": output_path, "time": elapsed}
+            self.logger.info(f"Text conversion completed in {elapsed:.2f}s ({total_pages} pages)")
+            return {"success": True, "output": output_path, "time": elapsed, "page_count": total_pages}
 
         except Exception as e:
             self.logger.error(f"Text conversion failed: {e}\n{traceback.format_exc()}")
@@ -591,64 +769,60 @@ class PDFToHTML(BaseConverter):
         try:
             doc = fitz.open(input_path)
             page_range = self._get_page_range(doc, pages)
-            embed_images = kwargs.get("embed_images", True)
-
-            html_parts = [
-                "<!DOCTYPE html>",
-                '<html lang="en">',
-                "<head>",
-                '<meta charset="UTF-8">',
-                '<meta name="viewport" content="width=device-width, initial-scale=1.0">',
-                f"<title>{Path(input_path).stem}</title>",
-                "<style>",
-                "body { font-family: 'Segoe UI', Arial, sans-serif; max-width: 900px; margin: 0 auto; padding: 20px; background: #f5f5f5; }",
-                ".page { background: white; padding: 40px; margin: 20px 0; box-shadow: 0 2px 8px rgba(0,0,0,0.1); border-radius: 4px; }",
-                ".page-header { color: #666; font-size: 12px; margin-bottom: 20px; border-bottom: 1px solid #eee; padding-bottom: 10px; }",
-                "img { max-width: 100%; height: auto; }",
-                "table { border-collapse: collapse; width: 100%; margin: 10px 0; }",
-                "td, th { border: 1px solid #ddd; padding: 8px; text-align: left; }",
-                "th { background: #f8f9fa; }",
-                "</style>",
-                "</head>",
-                "<body>",
-            ]
-
-            for pn in page_range:
-                page = doc[pn]
-                html_parts.append(f'<div class="page">')
-                html_parts.append(f'<div class="page-header">Page {pn + 1}</div>')
-
-                # Try to get HTML content from PyMuPDF
-                page_html = page.get_text("html")
-                if page_html:
-                    # Clean up PyMuPDF HTML output
-                    if HAS_BS4:
-                        soup = BeautifulSoup(page_html, "html.parser")
-                        # Remove PyMuPDF wrapper divs but keep content
-                        for div in soup.find_all("div"):
-                            div.unwrap()
-                        page_html = str(soup)
-                    html_parts.append(page_html)
-                else:
-                    # Fallback to OCR text
-                    text = self._extract_text_with_ocr(doc, pn, use_ocr)
-                    paragraphs = text.split("\n\n")
-                    for para in paragraphs:
-                        if para.strip():
-                            html_parts.append(f"<p>{para.strip()}</p>")
-
-                html_parts.append("</div>")
-
-            html_parts.extend(["</body>", "</html>"])
-            html_content = "\n".join(html_parts)
+            total_pages = len(page_range)
+            doc.close()
 
             with open(output_path, "w", encoding="utf-8") as f:
-                f.write(html_content)
+                # Write HTML header
+                f.write('<!DOCTYPE html>\n<html lang="en">\n<head>\n')
+                f.write('<meta charset="UTF-8">\n')
+                f.write('<meta name="viewport" content="width=device-width, initial-scale=1.0">\n')
+                f.write(f'<title>{Path(input_path).stem}</title>\n')
+                f.write('<style>\n')
+                f.write("body { font-family: 'Segoe UI', Arial, sans-serif; max-width: 900px; margin: 0 auto; padding: 20px; background: #f5f5f5; }\n")
+                f.write(".page { background: white; padding: 40px; margin: 20px 0; box-shadow: 0 2px 8px rgba(0,0,0,0.1); border-radius: 4px; }\n")
+                f.write(".page-header { color: #666; font-size: 12px; margin-bottom: 20px; border-bottom: 1px solid #eee; padding-bottom: 10px; }\n")
+                f.write("img { max-width: 100%; height: auto; }\n")
+                f.write("table { border-collapse: collapse; width: 100%; margin: 10px 0; }\n")
+                f.write("td, th { border: 1px solid #ddd; padding: 8px; text-align: left; }\n")
+                f.write("th { background: #f8f9fa; }\n")
+                f.write('</style>\n</head>\n<body>\n')
 
-            doc.close()
+                # Process pages in chunks
+                for chunk in self._process_in_chunks(page_range):
+                    doc = fitz.open(input_path)
+                    for pn in chunk:
+                        page = doc[pn]
+                        f.write(f'<div class="page">\n')
+                        f.write(f'<div class="page-header">Page {pn + 1}</div>\n')
+
+                        page_html = page.get_text("html")
+                        if page_html:
+                            if HAS_BS4:
+                                soup = BeautifulSoup(page_html, "html.parser")
+                                for div in soup.find_all("div"):
+                                    div.unwrap()
+                                page_html = str(soup)
+                            f.write(page_html)
+                        else:
+                            text = self._extract_text_with_ocr(doc, pn, use_ocr)
+                            text = TextExtractor.normalize_unicode(text)
+                            for para in text.split("\n\n"):
+                                if para.strip():
+                                    import html as html_lib
+                                    f.write(f"<p>{html_lib.escape(para.strip())}</p>\n")
+
+                        f.write('</div>\n')
+                        f.flush()
+                        self.logger.info(f"HTML: Page {pn+1}/{total_pages} done")
+                    doc.close()
+                    gc.collect()
+
+                f.write('</body>\n</html>\n')
+
             elapsed = time.time() - start_time
-            self.logger.info(f"HTML conversion completed in {elapsed:.2f}s")
-            return {"success": True, "output": output_path, "time": elapsed}
+            self.logger.info(f"HTML conversion completed in {elapsed:.2f}s ({total_pages} pages)")
+            return {"success": True, "output": output_path, "time": elapsed, "page_count": total_pages}
 
         except Exception as e:
             self.logger.error(f"HTML conversion failed: {e}\n{traceback.format_exc()}")
@@ -669,49 +843,54 @@ class PDFToMarkdown(BaseConverter):
         try:
             doc = fitz.open(input_path)
             page_range = self._get_page_range(doc, pages)
-            md_parts = [f"# {Path(input_path).stem}\n"]
-
-            for pn in page_range:
-                page = doc[pn]
-                md_parts.append(f"\n---\n\n## Page {pn + 1}\n")
-
-                # Try HTML → Markdown conversion for better formatting
-                page_html = page.get_text("html")
-                if page_html and HAS_MARKDOWNIFY and HAS_BS4:
-                    try:
-                        soup = BeautifulSoup(page_html, "html.parser")
-                        # Remove style tags
-                        for style in soup.find_all("style"):
-                            style.decompose()
-                        markdown_text = md(str(soup), heading_style="ATX", bullets="-")
-                        # Clean excessive whitespace
-                        markdown_text = re.sub(r"\n{3,}", "\n\n", markdown_text)
-                        md_parts.append(markdown_text)
-                    except Exception:
-                        text = self._extract_text_with_ocr(doc, pn, use_ocr)
-                        md_parts.append(self._text_to_markdown(text))
-                else:
-                    text = self._extract_text_with_ocr(doc, pn, use_ocr)
-                    md_parts.append(self._text_to_markdown(text))
-
-                # Extract tables with pdfplumber
-                try:
-                    with pdfplumber.open(input_path) as pdf:
-                        if pn < len(pdf.pages):
-                            tables = pdf.pages[pn].extract_tables()
-                            for table in tables:
-                                md_parts.append(self._table_to_markdown(table))
-                except Exception:
-                    pass
-
+            total_pages = len(page_range)
             doc.close()
 
             with open(output_path, "w", encoding="utf-8") as f:
-                f.write("\n".join(md_parts))
+                f.write(f"# {Path(input_path).stem}\n\n")
+
+                for chunk in self._process_in_chunks(page_range):
+                    doc = fitz.open(input_path)
+                    for pn in chunk:
+                        page = doc[pn]
+                        f.write(f"\n---\n\n## Page {pn + 1}\n\n")
+
+                        # Try HTML → Markdown for better formatting
+                        page_html = page.get_text("html")
+                        if page_html and HAS_MARKDOWNIFY and HAS_BS4:
+                            try:
+                                soup = BeautifulSoup(page_html, "html.parser")
+                                for style in soup.find_all("style"):
+                                    style.decompose()
+                                markdown_text = md(str(soup), heading_style="ATX", bullets="-")
+                                markdown_text = re.sub(r"\n{3,}", "\n\n", markdown_text)
+                                markdown_text = TextExtractor.normalize_unicode(markdown_text)
+                                f.write(markdown_text)
+                            except Exception:
+                                text = self._extract_text_with_ocr(doc, pn, use_ocr)
+                                f.write(self._text_to_markdown(text))
+                        else:
+                            text = self._extract_text_with_ocr(doc, pn, use_ocr)
+                            f.write(self._text_to_markdown(text))
+
+                        # Extract tables with pdfplumber
+                        try:
+                            with pdfplumber.open(input_path) as pdf:
+                                if pn < len(pdf.pages):
+                                    tables = pdf.pages[pn].extract_tables()
+                                    for table in tables:
+                                        f.write(self._table_to_markdown(table))
+                        except Exception:
+                            pass
+
+                        f.flush()
+                        self.logger.info(f"Markdown: Page {pn+1}/{total_pages} done")
+                    doc.close()
+                    gc.collect()
 
             elapsed = time.time() - start_time
-            self.logger.info(f"Markdown conversion completed in {elapsed:.2f}s")
-            return {"success": True, "output": output_path, "time": elapsed}
+            self.logger.info(f"Markdown conversion completed in {elapsed:.2f}s ({total_pages} pages)")
+            return {"success": True, "output": output_path, "time": elapsed, "page_count": total_pages}
 
         except Exception as e:
             self.logger.error(f"Markdown conversion failed: {e}\n{traceback.format_exc()}")
@@ -791,7 +970,7 @@ class PDFToCSV(BaseConverter):
 
                     for table in tables:
                         for row in table:
-                            cleaned_row = [str(cell or "").strip() for cell in row]
+                            cleaned_row = [TextExtractor.normalize_unicode(str(cell or "").strip()) for cell in row]
                             all_rows.append(cleaned_row)
                         all_rows.append([])  # Blank row separator
 
@@ -805,13 +984,12 @@ class PDFToCSV(BaseConverter):
                     text = self._extract_text_with_ocr(doc, pn, use_ocr)
                     for line in text.split("\n"):
                         if line.strip():
-                            # Split by common delimiters
                             if "\t" in line:
-                                all_rows.append(line.split("\t"))
+                                all_rows.append([TextExtractor.normalize_unicode(c) for c in line.split("\t")])
                             elif ";" in line:
-                                all_rows.append(line.split(";"))
+                                all_rows.append([TextExtractor.normalize_unicode(c) for c in line.split(";")])
                             else:
-                                all_rows.append([line.strip()])
+                                all_rows.append([TextExtractor.normalize_unicode(line.strip())])
                 doc.close()
 
             with open(output_path, "w", newline="", encoding="utf-8-sig") as f:
